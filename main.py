@@ -1,14 +1,13 @@
 from difflib import get_close_matches
 from pathlib import Path
 import sys
+import os
 
 import pandas as pd
 
-from src.functions import clear_terminal
-
 from football_predictor.src import config
 from football_predictor.src.load_data import load_dataset
-from football_predictor.src.predict import predict_match
+from football_predictor.src.predict import predict_upcoming_match
 
 
 RESET = "\033[0m"
@@ -19,6 +18,13 @@ GREEN = "\033[32m"
 YELLOW = "\033[33m"
 RED = "\033[31m"
 
+def clear_terminal():
+    if os.name == 'nt':  # Windows
+        os.system('cls')
+    elif os.name == 'posix':  # Linux og macOS
+        os.system('clear')
+    else:  # Fallback
+        print("\033c", end="")
 
 def color(text, style):
     return f"{style}{text}{RESET}"
@@ -260,8 +266,7 @@ def print_prediction_dashboard(prediction, home_team, away_team, home_profile, a
     title("FOOTBALL MATCH PREDICTOR")
 
     print(color(f"{home_team} vs {away_team}".center(78), BOLD))
-    print(color("Expected-goals model -> Poisson score matrix -> derived probabilities".center(78), DIM))
-
+    
     section("Expected goals")
     print_key_value(home_team, f"{prediction['home_expected_goals']:.2f} xG")
     print_key_value(away_team, f"{prediction['away_expected_goals']:.2f} xG")
@@ -296,14 +301,14 @@ def print_prediction_dashboard(prediction, home_team, away_team, home_profile, a
         label = f"{index}. {scoreline['scoreline']}"
         print_metric(label, scoreline["probability"])
 
-    section("Data used")
-    print_team_source(home_profile, "Home")
-    print()
-    print_team_source(away_profile, "Away")
-    print()
+    print("\n")
     print_key_value("Neutral venue", "yes" if feature_row["is_neutral"] else "no")
     print_key_value("World Cup", "yes" if feature_row["is_world_cup"] else "no")
     print_key_value("Continental", "yes" if feature_row["is_continental"] else "no")
+    print_key_value(
+        "Symmetric neutral",
+        "yes" if prediction.get("symmetric_neutral_used") else "no",
+    )
 
     print(color("\nPredictions are probabilities, not guarantees.", YELLOW))
 
@@ -339,22 +344,27 @@ def predict_flow(df, teams):
 
     home_profile = latest_team_profile(df, home_team)
     away_profile = latest_team_profile(df, away_team)
-    feature_row = build_match_features(
-        home_profile,
-        away_profile,
-        is_neutral,
-        is_world_cup,
-        is_continental,
-    )
+    tournament = "Friendly"
+    if is_world_cup:
+        tournament = "World Cup"
+    elif is_continental:
+        tournament = "UEFA Euro"
 
-    prediction = predict_match(feature_row)
+    match_date = df["_date"].max() + pd.Timedelta(days=1)
+    prediction = predict_upcoming_match(
+        home_team=home_team,
+        away_team=away_team,
+        match_date=match_date,
+        tournament=tournament,
+        is_neutral=int(is_neutral),
+    )
     print_prediction_dashboard(
         prediction,
         home_team,
         away_team,
         home_profile,
         away_profile,
-        feature_row,
+        prediction["feature_row"],
     )
     pause()
 
@@ -363,9 +373,7 @@ def main_menu(df, teams):
     while True:
         clear_terminal()
         title("FOOTBALL MATCH PREDICTOR")
-        print("Console dashboard")
-        print(color("Predicts expected goals first, then derives all probabilities.", DIM))
-        print()
+        print("CHOOSE AN OPTION:\n")
         print("  1. Predict a match")
         print("  2. Show team examples")
         print("  3. Exit")

@@ -51,14 +51,18 @@ def prepare_feature_row(feature_row, feature_columns):
     return row_df
 
 
-def predict_match(feature_row):
-    """Predict expected goals and all derived match probabilities."""
+def predict_feature_row_with_models(feature_row):
+    """Predict only the two expected-goals values for one feature row."""
     home_model, away_model, feature_columns = load_prediction_assets()
     X = prepare_feature_row(feature_row, feature_columns)
 
     home_lambda = max(float(home_model.predict(X)[0]), config.MIN_EXPECTED_GOALS)
     away_lambda = max(float(away_model.predict(X)[0]), config.MIN_EXPECTED_GOALS)
+    return home_lambda, away_lambda
 
+
+def _prediction_from_lambdas(home_lambda, away_lambda):
+    """Build the standard prediction dictionary from expected goals."""
     score_matrix = build_score_matrix(
         home_lambda,
         away_lambda,
@@ -75,6 +79,64 @@ def predict_match(feature_row):
     }
 
 
+def predict_match(feature_row):
+    """Predict expected goals and all derived match probabilities."""
+    home_lambda, away_lambda = predict_feature_row_with_models(feature_row)
+    return _prediction_from_lambdas(home_lambda, away_lambda)
+
+
+def predict_neutral_match_symmetric(
+    home_team,
+    away_team,
+    match_date,
+    tournament="Friendly",
+    is_neutral=1,
+):
+    """Predict a neutral match by averaging both team-order orientations."""
+    df = load_dataset(config.DATASET_PATH)
+    df = create_targets(df)
+
+    feature_row_ab = create_upcoming_match_features(
+        df=df,
+        home_team=home_team,
+        away_team=away_team,
+        match_date=match_date,
+        tournament=tournament,
+        is_neutral=is_neutral,
+    )
+    feature_row_ba = create_upcoming_match_features(
+        df=df,
+        home_team=away_team,
+        away_team=home_team,
+        match_date=match_date,
+        tournament=tournament,
+        is_neutral=is_neutral,
+    )
+
+    ab_home_lambda, ab_away_lambda = predict_feature_row_with_models(feature_row_ab)
+    ba_home_lambda, ba_away_lambda = predict_feature_row_with_models(feature_row_ba)
+
+    # In the reversed orientation, ba_away_lambda belongs to the original
+    # home_team and ba_home_lambda belongs to the original away_team.
+    home_team_lambda = (ab_home_lambda + ba_away_lambda) / 2.0
+    away_team_lambda = (ab_away_lambda + ba_home_lambda) / 2.0
+
+    prediction = _prediction_from_lambdas(home_team_lambda, away_team_lambda)
+    prediction["feature_row"] = feature_row_ab
+    prediction["feature_row_ab"] = feature_row_ab
+    prediction["feature_row_ba"] = feature_row_ba
+    prediction["raw_lambdas"] = {
+        "ab_home_lambda": ab_home_lambda,
+        "ab_away_lambda": ab_away_lambda,
+        "ba_home_lambda": ba_home_lambda,
+        "ba_away_lambda": ba_away_lambda,
+        "home_team_lambda": home_team_lambda,
+        "away_team_lambda": away_team_lambda,
+    }
+    prediction["symmetric_neutral_used"] = True
+    return prediction
+
+
 def predict_upcoming_match(
     home_team,
     away_team,
@@ -83,6 +145,15 @@ def predict_upcoming_match(
     is_neutral=1,
 ):
     """Build features from team names, then predict an upcoming match."""
+    if int(is_neutral) == 1:
+        return predict_neutral_match_symmetric(
+            home_team=home_team,
+            away_team=away_team,
+            match_date=match_date,
+            tournament=tournament,
+            is_neutral=is_neutral,
+        )
+
     df = load_dataset(config.DATASET_PATH)
     df = create_targets(df)
 
@@ -97,6 +168,13 @@ def predict_upcoming_match(
 
     prediction = predict_match(feature_row)
     prediction["feature_row"] = feature_row
+    prediction["feature_row_ab"] = feature_row
+    prediction["feature_row_ba"] = None
+    prediction["raw_lambdas"] = {
+        "home_lambda": prediction["home_expected_goals"],
+        "away_lambda": prediction["away_expected_goals"],
+    }
+    prediction["symmetric_neutral_used"] = False
     return prediction
 
 
