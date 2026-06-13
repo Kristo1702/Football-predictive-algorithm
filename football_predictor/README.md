@@ -1,6 +1,6 @@
 # Football Match Predictor
 
-This project predicts football matches by estimating expected goals first, then deriving every market-style probability from a Poisson scoreline matrix.
+This project predicts football matches by estimating expected goals first, then deriving all match probabilities from a Poisson scoreline matrix.
 
 It predicts:
 
@@ -10,57 +10,58 @@ It predicts:
 - How many goals the winner scores
 - Most likely exact scorelines
 
-The model is not a direct black-box winner classifier. It follows this pipeline:
+The core algorithm is:
 
 ```text
 historical match data
 -> train home and away expected-goals models
 -> predict home_expected_goals and away_expected_goals
 -> build a Poisson scoreline probability matrix
--> sum scoreline probabilities into match probabilities
+-> derive all other probabilities from that matrix
 ```
+
+The project does not train a black-box winner classifier first.
 
 ## Project Structure
 
 ```text
 football_predictor/
-├── data/
-│   └── teams_match_features.csv
-├── models/
-│   ├── home_goals_model.pkl
-│   ├── away_goals_model.pkl
-│   └── feature_columns.pkl
-├── src/
-│   ├── config.py
-│   ├── load_data.py
-│   ├── preprocessing.py
-│   ├── train.py
-│   ├── poisson.py
-│   ├── predict.py
-│   ├── evaluate.py
-│   └── utils.py
-├── main_train.py
-├── main_predict.py
-└── README.md
+|-- data/
+|   `-- teams_match_features.csv
+|-- models/
+|   |-- home_goals_model.pkl
+|   |-- away_goals_model.pkl
+|   `-- feature_columns.pkl
+|-- src/
+|   |-- config.py
+|   |-- load_data.py
+|   |-- preprocessing.py
+|   |-- feature_builder.py
+|   |-- train.py
+|   |-- poisson.py
+|   |-- predict.py
+|   |-- evaluate.py
+|   `-- utils.py
+|-- main_train.py
+|-- main_predict.py
+`-- README.md
 ```
-
-The `.pkl` model files are created when training runs.
 
 ## Data
 
-The CSV should contain pre-match features plus final score targets. The default file path is configured in `src/config.py`:
+The dataset is read from:
 
 ```python
 DATASET_PATH = DATA_DIR / "teams_match_features.csv"
 ```
 
-`home_goals` and `away_goals` are targets. They must never be used as input features because they are only known after the match.
+`home_goals` and `away_goals` are targets. They are never input features because they are only known after the match.
 
-`_home_team`, `_away_team`, `_date`, and `_tournament` are metadata. `_date` is used for sorting and time-based splitting, but not as a model input.
+`_home_team`, `_away_team`, `_date`, and `_tournament` are metadata. `_date` is used for sorting, filtering, time splitting, and feature building.
 
 ## Features
 
-Version 1 uses only:
+Version 1 uses:
 
 ```python
 [
@@ -79,62 +80,86 @@ Version 1 uses only:
 ]
 ```
 
-Extra feature candidates are listed in `src/config.py` for later model versions, but they are not enabled by default.
+Extra candidate features are listed in `src/config.py`, but are not enabled by default.
 
-## Algorithm
+## Training Window
 
-Two separate `PoissonRegressor` models are trained:
+Training does not use very old matches.
 
-- One model predicts `home_goals`
-- One model predicts `away_goals`
+Before splitting, the dataset is filtered to the latest `LOOKBACK_YEARS` years:
 
-Those predictions are expected goals:
-
-```text
-home_expected_goals = home_lambda
-away_expected_goals = away_lambda
+```python
+LOOKBACK_YEARS = 10
 ```
 
-The project then builds a scoreline matrix:
-
-```text
-matrix[i][j] = P(home scores i goals and away scores j goals)
-```
-
-For example:
-
-- `matrix[2][1]` is the probability of a 2-1 home win
-- `matrix[0][0]` is the probability of a 0-0 draw
-- `matrix[1][3]` is the probability of a 1-3 away win
-
-The matrix is normalized so its probabilities sum to 1. All downstream outputs come from this matrix.
+The reference date is the latest `_date` found in the dataset, not the current calendar year. For example, if the newest match in the file is in 2025, training only uses matches from roughly 2015 onward.
 
 ## Time Splitting
 
-The dataset is sorted by `_date`. Splits are chronological:
+After the 10-year filter, the data is split chronologically:
 
-- Training: old matches
-- Validation: middle period
-- Test: newest matches
+- Train: old part of the recent data
+- Validation: middle part
+- Test: newest part
 
-The defaults are in `src/config.py`:
+There is no random train/test split.
 
-```python
-TRAIN_END_DATE = "2021-12-31"
-VALIDATION_END_DATE = "2023-12-31"
-```
-
-This avoids random train/test splitting, which can leak future football information into the model.
+This avoids training on future matches and testing on earlier matches.
 
 ## Time Weighting
 
-Training uses exponential time decay:
+Newer matches receive higher sample weight than older matches:
 
 ```text
-weight = 0.5 ** (days_old / half_life_days)
+weight = 0.5 ** (days_old / HALF_LIFE_DAYS)
 ```
 
-Newer matches get higher weight. Older matches still contribute, but less strongly.
+The default half-life is:
+
+```python
+HALF_LIFE_DAYS = 1095
+```
+
+That is about 3 years, so a match about 3 years older than the newest training match counts about half as much before normalization. Weights are normalized so their average is about 1.0.
+
+## Final Saved Model
+
+Training first evaluates honestly on validation and test splits.
+
+If this flag is enabled:
+
+```python
+TRAIN_FINAL_MODEL_ON_ALL_RECENT_DATA = True
+```
+
+the final saved production models are then trained again on all recent matches from the 10-year window. This lets evaluation stay honest while the saved model still uses the newest available information.
+
+## Automatic Prediction Features
+
+`src/feature_builder.py` can create model features from team names:
+
+```python
+create_upcoming_match_features(
+    df,
+    home_team="Denmark",
+    away_team="Norway",
+    match_date="2025-12-12",
+    tournament="Friendly",
+    is_neutral=1,
+)
+```
+
+The feature builder uses only matches before `match_date`.
+
+It computes:
+
+- Latest known home-team Elo before the match date
+- Latest known away-team Elo before the match date
+- Elo difference
+- Each team's form from its latest `FORM_MATCH_WINDOW` matches before the match date
+- Tournament flags
+
+Warning: Elo is taken from the latest available pre-match Elo before the prediction date. It is an approximation unless the dataset provides fully updated current Elo values.
 
 ## Training
 
@@ -144,7 +169,7 @@ From the `football_predictor` directory:
 python main_train.py
 ```
 
-Or from the repository root:
+From the repository root:
 
 ```bash
 python football_predictor/main_train.py
@@ -152,71 +177,64 @@ python football_predictor/main_train.py
 
 Training will:
 
-1. Load `data/teams_match_features.csv`
-2. Parse and sort `_date`
-3. Create targets
-4. Drop rows with missing selected features or missing targets
-5. Split by time
-6. Train home and away expected-goals models
+1. Load the dataset
+2. Create target columns
+3. Clean missing targets and features
+4. Filter to the latest 10 years
+5. Split the recent data chronologically
+6. Train expected-goals models
 7. Evaluate validation and test splits
-8. Save models into `models/`
+8. Optionally train final saved models on all recent data
 
 ## Prediction
 
-Train first so the model files exist. Then run:
+Train first so model files exist. Then run:
 
 ```bash
 python main_predict.py
 ```
 
-Or from the repository root:
+or from the repository root:
 
 ```bash
 python football_predictor/main_predict.py
 ```
 
-`main_predict.py` contains an example feature row:
+`main_predict.py` predicts an automatic Denmark vs Norway example. It sets the match date to one day after the latest match in the dataset, builds features from team names, then prints the generated feature row and prediction output.
+
+Programmatic use:
 
 ```python
-example_match = {
-    "home_elo": 1900,
-    "away_elo": 1750,
-    "elo_diff": 150,
-    "home_form_scored": 2.0,
-    "home_form_conceded": 0.8,
-    "home_form_win_rate": 0.7,
-    "away_form_scored": 1.3,
-    "away_form_conceded": 1.2,
-    "away_form_win_rate": 0.45,
-    "is_neutral": 1,
-    "is_world_cup": 1,
-    "is_continental": 0,
-}
+from src.predict import predict_upcoming_match
+
+prediction = predict_upcoming_match(
+    home_team="Denmark",
+    away_team="Norway",
+    match_date="2025-12-12",
+    tournament="Friendly",
+    is_neutral=1,
+)
 ```
 
-For real predictions, replace those values with information known before kickoff.
+The returned dictionary includes:
+
+- `feature_row`
+- `home_expected_goals`
+- `away_expected_goals`
+- derived probability dictionaries
+- top scorelines
 
 ## Output Interpretation
 
-Expected goals are model estimates of scoring rates, not exact score predictions.
+Expected goals are scoring-rate estimates, not exact score predictions.
 
-Example:
+The 1X2 probabilities are calculated by summing scoreline matrix cells:
 
-```text
-Expected goals
-  Home: 1.72
-  Away: 1.05
-```
+- Home win: home goals greater than away goals
+- Draw: home goals equal away goals
+- Away win: home goals less than away goals
 
-This means the model estimates the home team scoring rate at 1.72 goals and the away team scoring rate at 1.05 goals.
-
-The 1X2 probabilities are calculated by summing exact scorelines:
-
-- Home win: sum of all scorelines where home goals > away goals
-- Draw: sum of all scorelines where home goals = away goals
-- Away win: sum of all scorelines where home goals < away goals
-
-The most likely scorelines are the five individual cells in the scoreline matrix with the highest probabilities.
+The most likely scorelines are the five highest-probability cells in the matrix.
 
 ## Evaluation
 
@@ -230,33 +248,25 @@ The most likely scorelines are the five individual cells in the scoreline matrix
 - Over 2.5 goals Brier score
 - Simple 1X2 accuracy
 
-Accuracy is secondary. Log loss and Brier score matter more because this is a probability model.
+Accuracy is secondary. Log loss and Brier score are more important because this is a probability model.
 
-## Data Leakage Warnings
+## Leakage Warnings
 
-Do not add features that are only known after the match starts or after it ends.
+Do not include post-match or future information in features.
 
-Do not include:
+Never use these as inputs:
 
 - `home_goals`
 - `away_goals`
 - `total_goals`
 - `result`
 - `winner_goals`
-- Any future form, future rating, or post-match statistic
 
-Even strong validation numbers are not trustworthy if the feature table leaks future information.
+For upcoming predictions, the feature builder uses only matches before the prediction date. If the underlying dataset itself contains leaked feature engineering, the model can still be misleading.
 
 ## Limitations
 
-This is a clean baseline, not a finished betting or production system.
-
-Important limitations:
-
-- Independent Poisson assumptions can understate correlation between team scores.
-- Red cards, injuries, lineups, weather, travel, and tactical context are not modeled unless supplied as clean pre-match features.
+- Independent Poisson score assumptions are simple and may miss score correlation.
+- Lineups, injuries, red cards, travel, and weather are not modeled unless added as clean pre-match features.
 - Scoreline tails above `MAX_GOALS` are truncated and normalized.
-- The model quality depends heavily on whether ELO and form features were generated without future leakage.
 - Predictions are probabilities, not guarantees.
-
-Use the outputs as calibrated uncertainty estimates, not certainties.

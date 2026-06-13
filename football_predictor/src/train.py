@@ -23,8 +23,8 @@ def build_goal_model(alpha=config.POISSON_ALPHA, max_iter=config.POISSON_MAX_ITE
 
 def train_models(
     train_df,
-    val_df,
-    test_df,
+    val_df=None,
+    test_df=None,
     feature_columns=config.FEATURE_COLUMNS,
     alpha=config.POISSON_ALPHA,
     max_iter=config.POISSON_MAX_ITER,
@@ -33,8 +33,10 @@ def train_models(
     feature_columns = list(feature_columns)
     required_columns = feature_columns + ["home_goals", "away_goals"]
     ensure_columns_exist(train_df, required_columns, context="training data")
-    ensure_columns_exist(val_df, required_columns, context="validation data")
-    ensure_columns_exist(test_df, required_columns, context="test data")
+    if val_df is not None:
+        ensure_columns_exist(val_df, required_columns, context="validation data")
+    if test_df is not None:
+        ensure_columns_exist(test_df, required_columns, context="test data")
 
     X_train = train_df[feature_columns]
     y_home = train_df["home_goals"]
@@ -47,18 +49,21 @@ def train_models(
     home_model.fit(X_train, y_home, poisson__sample_weight=sample_weights)
     away_model.fit(X_train, y_away, poisson__sample_weight=sample_weights)
 
-    X_val = val_df[feature_columns]
-    val_home_pred = home_model.predict(X_val)
-    val_away_pred = away_model.predict(X_val)
-
     print(f"Training rows: {len(train_df)}")
-    print(f"Validation rows: {len(val_df)}")
-    print(f"Test rows: {len(test_df)}")
+    if val_df is not None:
+        print(f"Validation rows: {len(val_df)}")
+    if test_df is not None:
+        print(f"Test rows: {len(test_df)}")
     print("Selected feature columns:")
     for column in feature_columns:
         print(f"  - {column}")
-    print(f"Average predicted home goals on validation: {val_home_pred.mean():.3f}")
-    print(f"Average predicted away goals on validation: {val_away_pred.mean():.3f}")
+
+    if val_df is not None:
+        X_val = val_df[feature_columns]
+        val_home_pred = home_model.predict(X_val)
+        val_away_pred = away_model.predict(X_val)
+        print(f"Average predicted home goals on validation: {val_home_pred.mean():.3f}")
+        print(f"Average predicted away goals on validation: {val_away_pred.mean():.3f}")
 
     return home_model, away_model, feature_columns
 

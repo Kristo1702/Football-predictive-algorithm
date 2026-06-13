@@ -9,17 +9,23 @@ if str(PROJECT_DIR) not in sys.path:
 from src import config
 from src.evaluate import evaluate_models
 from src.load_data import load_dataset
-from src.preprocessing import clean_data, create_targets, time_based_split
-from src.train import train_and_save_models
+from src.preprocessing import (
+    clean_data,
+    create_targets,
+    filter_recent_matches,
+    time_based_split,
+)
+from src.train import save_models, train_models
 
 
 def main():
     df = load_dataset(config.DATASET_PATH)
     df = create_targets(df)
     df = clean_data(df, config.FEATURE_COLUMNS)
+    recent_df = filter_recent_matches(df)
 
-    train_df, val_df, test_df = time_based_split(df)
-    home_model, away_model, feature_columns = train_and_save_models(
+    train_df, val_df, test_df = time_based_split(recent_df)
+    home_model, away_model, feature_columns = train_models(
         train_df,
         val_df,
         test_df,
@@ -39,6 +45,18 @@ def main():
         feature_columns=feature_columns,
         label="Test",
     )
+
+    if config.TRAIN_FINAL_MODEL_ON_ALL_RECENT_DATA:
+        print("\nTraining final production models on all recent matches...")
+        home_model, away_model, feature_columns = train_models(
+            recent_df,
+            feature_columns=config.FEATURE_COLUMNS,
+        )
+        save_models(home_model, away_model, feature_columns)
+        print("Final saved models were trained on all recent matches.")
+    else:
+        save_models(home_model, away_model, feature_columns)
+        print("Saved models were trained on the training split only.")
 
     print("\nSaved model files")
     print(f"  {config.HOME_MODEL_PATH}")

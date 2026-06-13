@@ -2,7 +2,10 @@ import joblib
 import pandas as pd
 
 from . import config
+from .feature_builder import create_upcoming_match_features
+from .load_data import load_dataset
 from .poisson import build_score_matrix, derive_probabilities
+from .preprocessing import create_targets
 from .utils import ensure_columns_exist, format_probability
 
 
@@ -70,6 +73,31 @@ def predict_match(feature_row):
         "probabilities": derived,
         "scorelines": scorelines,
     }
+
+
+def predict_upcoming_match(
+    home_team,
+    away_team,
+    match_date,
+    tournament="Friendly",
+    is_neutral=1,
+):
+    """Build features from team names, then predict an upcoming match."""
+    df = load_dataset(config.DATASET_PATH)
+    df = create_targets(df)
+
+    feature_row = create_upcoming_match_features(
+        df=df,
+        home_team=home_team,
+        away_team=away_team,
+        match_date=match_date,
+        tournament=tournament,
+        is_neutral=is_neutral,
+    )
+
+    prediction = predict_match(feature_row)
+    prediction["feature_row"] = feature_row
+    return prediction
 
 
 def print_prediction(prediction, home_team=None, away_team=None):

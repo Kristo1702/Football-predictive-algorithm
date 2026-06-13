@@ -69,6 +69,40 @@ def clean_data(df, feature_columns):
     return df.reset_index(drop=True)
 
 
+def filter_recent_matches(
+    df,
+    lookback_years=config.LOOKBACK_YEARS,
+    reference_date=None,
+):
+    """Keep only matches inside the recent training lookback window."""
+    if lookback_years <= 0:
+        raise ValueError("lookback_years must be positive.")
+
+    ensure_columns_exist(df, ["_date"], context="clean data")
+    df = df.copy()
+    df["_date"] = pd.to_datetime(df["_date"], errors="coerce")
+    if df["_date"].isna().any():
+        raise ValueError("Cannot filter recent matches with missing _date values.")
+
+    if reference_date is None:
+        reference_date = df["_date"].max()
+    else:
+        reference_date = pd.Timestamp(reference_date)
+
+    cutoff_date = reference_date - pd.DateOffset(years=lookback_years)
+    before_rows = len(df)
+    df = df[df["_date"] >= cutoff_date].copy()
+    removed_rows = before_rows - len(df)
+
+    print(
+        f"Filtered to matches from {cutoff_date.date()} onward "
+        f"using reference date {reference_date.date()}."
+    )
+    print(f"Removed {removed_rows} matches older than {lookback_years} years.")
+
+    return df.sort_values("_date").reset_index(drop=True)
+
+
 def time_based_split(
     df,
     train_end_date=config.TRAIN_END_DATE,
@@ -113,4 +147,12 @@ def create_time_weights(df, half_life_days=config.HALF_LIFE_DAYS):
     latest_date = dates.max()
     days_old = (latest_date - dates).dt.days.clip(lower=0)
     weights = 0.5 ** (days_old / float(half_life_days))
-    return weights.to_numpy(dtype=float)
+    weights = weights.to_numpy(dtype=float)
+
+    average_weight = weights.mean()
+    if average_weight <= 0:
+        raise ValueError("Time weights have non-positive average.")
+
+    # Keep the relative recency emphasis, but make model regularization easier
+    # to reason about by keeping the average training weight close to 1.0.
+    return weights / average_weight
