@@ -1,2 +1,2 @@
 # Football-predictive-algorithm
-Algorithm to predict football matches
+Machine learning algorithm to predict football match outcome probabilities
